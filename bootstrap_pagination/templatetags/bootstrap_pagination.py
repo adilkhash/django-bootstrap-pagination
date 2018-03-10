@@ -1,7 +1,10 @@
 import re
 
 import django
-from django.core.urlresolvers import reverse, NoReverseMatch
+try:
+    from django.core.urlresolvers import reverse, NoReverseMatch
+except ImportError:  # Django 2 detected :)
+    from django.urls import reverse, NoReverseMatch
 from django.template import Node, Library, TemplateSyntaxError, VariableDoesNotExist
 from django.template.loader import get_template
 from django.conf import settings
@@ -23,12 +26,31 @@ else:
 register = Library()
 
 
+# Starting from django 1.10 Context object no longer has attribute current_app
+# Instead application code could set current_app to HttpRequest object, if so we seek it there
+def get_current_app(context):
+    try:
+        current_app = context.current_app  # django < 1.10 compatible
+    except AttributeError:
+        try:
+            current_app = context.request.current_app
+        except AttributeError:
+            try:
+                current_app = context.request.resolver_match.namespace
+            except AttributeError:
+                return None
+    return current_app
+
+
 def strToBool(val):
     """
     Helper function to turn a string representation of "true" into
     boolean True.
     """
-    return val.lower() == "true"
+    if isinstance(val, str):
+        val = val.lower()
+
+    return val in ['true', 'on', 'yes', True]
 
 
 def get_page_url(page_num, current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor):
@@ -42,7 +64,7 @@ def get_page_url(page_num, current_app, url_view_name, url_extra_args, url_extra
        # This bit of code comes from the default django url tag
         try:
             url = reverse(url_view_name, args=url_extra_args, kwargs=url_extra_kwargs, current_app=current_app)
-        except NoReverseMatch as e:
+        except NoReverseMatch as e:  # dotted method deprecated since 1.8
             if settings.SETTINGS_MODULE:
                 project_name = settings.SETTINGS_MODULE.split('.')[0]
                 url = reverse(project_name + '.' + url_view_name, args=url_extra_args, kwargs=url_extra_kwargs, current_app=current_app)
@@ -55,7 +77,11 @@ def get_page_url(page_num, current_app, url_view_name, url_extra_args, url_extra
         url_get_params = url_get_params.copy()
         url_get_params[url_param_name] = page_num
 
-    if (len(url_get_params) > 0):
+    if len(url_get_params) > 0:
+        if not isinstance(url_get_params, QueryDict):
+            tmp = QueryDict(mutable=True)
+            tmp.update(url_get_params)
+            url_get_params = tmp
         url += '?' + url_get_params.urlencode()
 
     if (url_anchor is not None):
@@ -108,11 +134,11 @@ class BootstrapPagerNode(Node):
 
         previous_page_url = None
         if page.has_previous():
-            previous_page_url = get_page_url(page.previous_page_number(), context.current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
+            previous_page_url = get_page_url(page.previous_page_number(), get_current_app(context), url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
 
         next_page_url = None
         if page.has_next():
-            next_page_url = get_page_url(page.next_page_number(), context.current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
+            next_page_url = get_page_url(page.next_page_number(), get_current_app(context), url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
 
         template = "bootstrap_pagination/pager-bs%i.html" % get_bootstrap_version()
 
@@ -207,29 +233,31 @@ class BootstrapPaginationNode(Node):
         # Generate our URLs (page range + special urls for first, previous, next, and last)
         page_urls = []
         for curpage in page_range:
-            if curpage == page.paginator.num_pages:
+            if not show_index_range:
+                index_range = ""
+            elif curpage == page.paginator.num_pages:
                 index_range = "%s-%s" % (1 + (curpage - 1) * page.paginator.per_page, len(page.paginator.object_list), )
             else:
                 index_range = "%s-%s" % (1 + (curpage - 1) * page.paginator.per_page, curpage * page.paginator.per_page, )
                 
-            url = get_page_url(curpage, context.current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
+            url = get_page_url(curpage, get_current_app(context), url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
             page_urls.append((curpage, index_range, url))
 
         first_page_url = None
         if current_page >= 1:
-            first_page_url = get_page_url(1, context.current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
+            first_page_url = get_page_url(1, get_current_app(context), url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
 
         last_page_url = None
         if current_page <= page_count:
-            last_page_url = get_page_url(page_count, context.current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
+            last_page_url = get_page_url(page_count, get_current_app(context), url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
 
         previous_page_url = None
         if page.has_previous():
-            previous_page_url = get_page_url(page.previous_page_number(), context.current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
+            previous_page_url = get_page_url(page.previous_page_number(), get_current_app(context), url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
 
         next_page_url = None
         if page.has_next():
-            next_page_url = get_page_url(page.next_page_number(), context.current_app, url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
+            next_page_url = get_page_url(page.next_page_number(), get_current_app(context), url_view_name, url_extra_args, url_extra_kwargs, url_param_name, url_get_params, url_anchor)
 
         template = "bootstrap_pagination/pagination-bs%i.html" % get_bootstrap_version()
 
